@@ -22,6 +22,7 @@ int main(void) {
 		
 	printf("\n");	
 	afree(name1);
+	afree(name0);
 	
 	printf("%zu", HEAD->free_size);
 

@@ -5,35 +5,46 @@
 #include <string.h>
 
 #define HEAPSIZE 4064
-#define HEAP_SHIFT(h)	( (void*) h + sizeof(struct s_heap)		)	
-#define BLOCK_SHIFT(b)	( (void*) b + sizeof(struct s_block)	)
+#define HEAP_SHIFT(h)	( (void*) h + sizeof(struct s_heap)	)	
+#define BLOCK_SHIFT(b)	( (void*) b + sizeof(struct s_block) )
 
 struct s_heap {
 	struct s_heap	*next;
 
 	size_t			free_size;
+	size_t			blocks;
 };
 
 struct s_block {
-	struct s_block	*next,
-					*prev;
+	struct s_block	*next;
+	struct s_block	*prev;
 	
 	size_t			size;
 	
 	short			freed;
 };
 
-#ifndef TEST
+#if (defined(DEBUG) || defined(TEST)) 
 static 
 #endif
-
 struct s_heap *HEAD = NULL;
 
-#if (defined(DEBUG) || defined(TEST))
-int heapnum = 0;
-int blocknum = 0;
-int splitnum = 0;
-#endif
+static size_t heapcount = 0;
+
+size_t getheapc(void) {
+	return heapcount;
+}
+
+void heapinfo(struct s_heap *h) {
+	printf( "blockcount: %zu\n"
+			"free memory in heap: %zu\n", h->blocks, h->free_size);
+};
+
+void blockinfo(struct s_block *b) {
+	printf(	"block size: %zu\n"
+			"block status: %s\n"
+			, b->size, b->freed == 0 ? "NOT FREE\n" : "FREE\n" );
+}
 
 /* derive one block with fixed memory from existing block's memory and cascade them. Return new block's addr*/
 void *block_fork(struct s_block *b, size_t nbyte) {
@@ -51,9 +62,10 @@ void *block_fork(struct s_block *b, size_t nbyte) {
 	b->next = newb;
 	b->size = remainder;
 
-#if (defined(TEST) || defined(DEBUG))
-	splitnum++;
-#endif
+	while (b->prev != NULL) 
+		b = b->prev;
+	struct s_heap *h = (struct s_heap*) ( ((void*)b) - sizeof(struct s_heap));
+	h->blocks++;
 
 	return newb;
 }
@@ -68,7 +80,9 @@ int heap_alloc(void) {
 
 	newh->free_size	= HEAPSIZE - sizeof(struct s_heap);
 	newh->next		= HEAD;
+	newh->blocks	= 1;
 	HEAD			= newh;
+	heapcount++;
 
 
 	struct s_block *b = HEAP_SHIFT(newh);
@@ -76,11 +90,6 @@ int heap_alloc(void) {
 	b->prev = NULL;
 	b->freed = 1;
 	b->size = (newh->free_size -= sizeof(struct s_block));
-
-#if (defined(TEST) || defined(DEBUG))
-	blocknum++;
-	heapnum++;
-#endif
 
 	return 0;
 }
@@ -122,14 +131,16 @@ void *aalloc(size_t nbyte) {
 void afree(void *p) {
 	struct s_block *b = (struct s_block*) (p - sizeof(struct s_block));
 	b->freed = 1;
+
 	size_t size = b->size;
 
 	while (b->prev != NULL) 
 		b = b->prev;
 	
-	struct s_heap *h = (struct s_heap*) (p - sizeof(struct s_heap) );
+	struct s_heap *h = (struct s_heap*) ( ((void*) b) - sizeof(struct s_heap) );
 	h->free_size += size;
 }
+
 
 
 
