@@ -41,9 +41,7 @@ struct s_block {
 
 struct s_heap *HEAD = NULL;
 
-#if defined(DEBUG) || defined(TEST)
 size_t heapcount = 0;
-#endif
 
 size_t getheapc(void) {
 	return heapcount;
@@ -71,14 +69,17 @@ getheap(struct s_block *b)
 	return h;
 }
 
-/* derive one block with fixed memory from existing block's memory and cascade them. Return new block's addr*/
+/* derive one block with fixed memory from existing block's memory and cascade them.
+	Return new block's addr, NULL in fail
+*/
+
 struct s_block*
 bfork(struct s_block *b, size_t nbyte, int flag) 
 {
 
 	size_t remainder = b->size - nbyte - sizeof(struct s_block);
-
-	assert(remainder > 0);
+	if (remainder == 0)
+		return NULL;
 
 	struct s_block *newb = (struct s_block*) ( BLOCK_SHIFT(b) + remainder ); 
 	newb->freed = 1;
@@ -159,10 +160,18 @@ int heapalloc(void) {
 struct s_heap*
 heapfree(struct s_heap *h, struct s_heap *rmh) {
 	LOG("tried to HEAPFREE\n");
+	if (h == NULL)
+		return NULL;
+
 	if (h == rmh) {
 		struct s_heap *next = rmh->next;
-		if (munmap(rmh, HEAPSIZE) == -1)
-			warn("error occured");
+		if (munmap(rmh, HEAPSIZE) == -1) {
+			warn("munmap");
+			return h;
+		}
+#if defined(DEBUG) || defined(TEST)
+		heapcount--;
+#endif
 		return next;
 	} 
 
@@ -242,7 +251,12 @@ void *aalloc(size_t nbyte) {
 }
 
 void afree(void *p) {
+	if (p == NULL)
+		return;
+
 	struct s_block *b = (struct s_block*) (p - sizeof(struct s_block));
+	if (b->freed)
+		return;
 	b->freed = 1;
 
 	size_t size = b->size;
@@ -252,18 +266,10 @@ void afree(void *p) {
 	h->fblocks++;
 
 	LOG("afree(): freeblocks: %zu\tblocks: %zu\n", h->fblocks, h->blocks);
-	
-	/*
-	if (h->fblocks == h->blocks) {
-		struct s_heap headh;
-		headh.next = HEAD;
-		heapfree(&headh, h);
-	}
-	*/
+
+	if (h->fblocks == h->blocks)
+		HEAD = heapfree(HEAD, h);
 }
-
-
-
 
 
 
