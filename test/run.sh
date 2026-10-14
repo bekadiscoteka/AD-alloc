@@ -19,7 +19,8 @@ fi
 for test_file in "${test_files[@]}"; do
 	test_name="$(basename "${test_file%.c}")"
 	printf 'Building %s...\n' "$test_name"
-	if ! cc -std=gnu11 -I "$project_root" "$test_file" -o "$build_dir/$test_name"; then
+	if ! cc -std=gnu11 -Wall -Wextra -Werror -I "$project_root" \
+		"$test_file" -o "$build_dir/$test_name"; then
 		printf 'Build failed: %s\n' "$test_name" >&2
 		failures+=("$test_name")
 		continue

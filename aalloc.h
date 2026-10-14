@@ -2,12 +2,17 @@
 #include <assert.h>
 #include <sys/mman.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <string.h>
 #include <err.h>
 
 #define HEAPSIZE 4064
-#define HEAP_SHIFT(h)	( (void*) h + sizeof(struct s_heap)	)	
-#define BLOCK_SHIFT(b)	( (void*) b + sizeof(struct s_block) )
+#define ALIGN_UP_SIZE(n) \
+	(((n) + _Alignof(max_align_t) - 1) / _Alignof(max_align_t) * _Alignof(max_align_t))
+#define HEAP_HEADER_SIZE ALIGN_UP_SIZE(sizeof(struct s_heap))
+#define BLOCK_HEADER_SIZE ALIGN_UP_SIZE(sizeof(struct s_block))
+#define HEAP_SHIFT(h) ((struct s_block *)((char *)(h) + HEAP_HEADER_SIZE))
+#define BLOCK_SHIFT(b) ((void *)((char *)(b) + BLOCK_HEADER_SIZE))
 
 #define RESERVE 1
 
@@ -64,7 +69,7 @@ getheap(struct s_block *b)
 {
 	while (b->prev != NULL) 
 		b = b->prev;
-	struct s_heap *h = (struct s_heap*) ( ((void*)b) - sizeof(struct s_heap));
+	struct s_heap *h = (struct s_heap *)((char *)b - HEAP_HEADER_SIZE);
 
 	return h;
 }
@@ -77,11 +82,11 @@ struct s_block*
 bfork(struct s_block *b, size_t nbyte, int flag) 
 {
 
-	size_t remainder = b->size - nbyte - sizeof(struct s_block);
+	size_t remainder = b->size - nbyte - BLOCK_HEADER_SIZE;
 	if (remainder == 0)
 		return NULL;
 
-	struct s_block *newb = (struct s_block*) ( BLOCK_SHIFT(b) + remainder ); 
+	struct s_block *newb = (struct s_block *)((char *)BLOCK_SHIFT(b) + remainder);
 	newb->freed = 1;
 	newb->size	= nbyte;
 	newb->next	= b->next;
@@ -93,7 +98,7 @@ bfork(struct s_block *b, size_t nbyte, int flag)
 	struct s_heap *h = getheap(b);
 	h->blocks++;
 	h->fblocks++;
-	h->fsize -= sizeof(struct s_block);
+	h->fsize -= BLOCK_HEADER_SIZE;
 	if (RESERVE && flag) {
 		h->fsize -= newb->size;
 		h->fblocks--;	
@@ -107,10 +112,10 @@ bfork(struct s_block *b, size_t nbyte, int flag)
 struct s_block*
 bfork_front(struct s_block *b, size_t nbyte, int flag) 
 {
-	size_t remain = b->size - nbyte - sizeof(struct s_block);
+	size_t remain = b->size - nbyte - BLOCK_HEADER_SIZE;
 	assert(remain > 0);
 	
-	struct s_block *newb = (struct s_block*) (BLOCK_SHIFT(b) + nbyte);
+	struct s_block *newb = (struct s_block *)((char *)BLOCK_SHIFT(b) + nbyte);
 	newb->freed	= 1;
 	newb->size	= remain;	
 	newb->prev	= b;
@@ -122,7 +127,7 @@ bfork_front(struct s_block *b, size_t nbyte, int flag)
 	struct s_heap *h = getheap(b);
 	h->blocks++;
 	h->fblocks++;
-	h->fsize -= sizeof(struct s_block);
+	h->fsize -= BLOCK_HEADER_SIZE;
 	if (RESERVE && flag) {
 		h->fsize -= b->size;
 		h->fblocks--;
@@ -140,7 +145,7 @@ int heapalloc(void) {
 	if (newh == (void*) -1)  
 		return -1;
 
-	newh->fsize	= HEAPSIZE - sizeof(struct s_heap);
+	newh->fsize	= HEAPSIZE - HEAP_HEADER_SIZE;
 	newh->next		= HEAD;
 	newh->blocks	= 1;
 	newh->fblocks	= 1;
@@ -152,7 +157,7 @@ int heapalloc(void) {
 	b->next = NULL;
 	b->prev = NULL;
 	b->freed = 1;
-	b->size = (newh->fsize -= sizeof(struct s_block));
+	b->size = (newh->fsize -= BLOCK_HEADER_SIZE);
 
 	return 0;
 }
@@ -169,9 +174,7 @@ heapfree(struct s_heap *h, struct s_heap *rmh) {
 			warn("munmap");
 			return h;
 		}
-#if defined(DEBUG) || defined(TEST)
 		heapcount--;
-#endif
 		return next;
 	} 
 
@@ -190,7 +193,7 @@ bmerge( struct s_block *b ) {
 
 	struct s_block *rm = b->next;
 	
-	b->size += rm->size + sizeof(struct s_block);	
+	b->size += rm->size + BLOCK_HEADER_SIZE;
 	b->next = rm->next;
 	if (rm->next != NULL) 
 		rm->next->prev = b;
@@ -198,7 +201,7 @@ bmerge( struct s_block *b ) {
 	struct s_heap *h = getheap(b);
 	h->blocks--;
 	h->fblocks--;
-	h->fsize -= sizeof(struct s_block);
+	h->fsize += BLOCK_HEADER_SIZE;
 
 	return b;
 }
@@ -206,7 +209,13 @@ bmerge( struct s_block *b ) {
 
 /* custom malloc() implementation */
 void *aalloc(size_t nbyte) {
-	assert(nbyte < HEAPSIZE);
+	const size_t alignment = _Alignof(max_align_t);
+	const size_t max_size = HEAPSIZE - HEAP_HEADER_SIZE - BLOCK_HEADER_SIZE;
+	if (nbyte > SIZE_MAX - (alignment - 1))
+		return NULL;
+	nbyte = ALIGN_UP_SIZE(nbyte);
+	if (nbyte > max_size)
+		return NULL;
 
 	struct s_heap *h;
 	for ( h=HEAD; h != NULL; h=h->next ) {
@@ -218,7 +227,7 @@ void *aalloc(size_t nbyte) {
 			for ( b=HEAP_SHIFT(h); b != NULL; b=b->next ) {
 				if ( b->freed ) {
 
-					if (b->size > nbyte + sizeof(struct s_block)) {
+					if (b->size > nbyte + BLOCK_HEADER_SIZE) {
 						b = bfork_front(b, nbyte, RESERVE);
 						return BLOCK_SHIFT(b);
 					}
@@ -254,7 +263,7 @@ void afree(void *p) {
 	if (p == NULL)
 		return;
 
-	struct s_block *b = (struct s_block*) (p - sizeof(struct s_block));
+	struct s_block *b = (struct s_block *)((char *)p - BLOCK_HEADER_SIZE);
 	if (b->freed)
 		return;
 	b->freed = 1;
@@ -270,6 +279,3 @@ void afree(void *p) {
 	if (h->fblocks == h->blocks)
 		HEAD = heapfree(HEAD, h);
 }
-
-
-
