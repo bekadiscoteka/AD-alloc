@@ -28,20 +28,20 @@
 
 struct s_heap {
 	struct s_heap	*next,
-					*prev;
+			*prev;
 
-	size_t			fsize;
-	size_t			blocks;
-	size_t			fblocks;
+	size_t		fsize;
+	size_t		blocks;
+	size_t		fblocks;
 };
 
 struct s_block {
 	struct s_block	*next;
 	struct s_block	*prev;
 	
-	size_t			size;
+	size_t		size;
 	
-	short			freed;
+	short		freed;
 };
 
 struct s_heap *HEAD = NULL;
@@ -87,12 +87,14 @@ bfork(struct s_block *b, size_t nbyte, int flag)
 		return NULL;
 
 	struct s_block *newb = (struct s_block *)((char *)BLOCK_SHIFT(b) + remainder);
-	newb->freed = 1;
+	newb->freed	= 1;
 	newb->size	= nbyte;
 	newb->next	= b->next;
 	newb->prev	= b;
 
 	b->next = newb;
+	if (newb->next != NULL)
+		newb->next->prev = newb;
 	b->size = remainder;
 
 	struct s_heap *h = getheap(b);
@@ -102,7 +104,7 @@ bfork(struct s_block *b, size_t nbyte, int flag)
 	if (RESERVE && flag) {
 		h->fsize -= newb->size;
 		h->fblocks--;	
-		b->freed = 0;
+		newb->freed = 0;
 	}
 
 	return newb;
@@ -123,6 +125,8 @@ bfork_front(struct s_block *b, size_t nbyte, int flag)
 
 	b->size = nbyte;
 	b->next	= newb;
+	if (newb->next != NULL)
+		newb->next->prev = newb;
 
 	struct s_heap *h = getheap(b);
 	h->blocks++;
@@ -137,19 +141,27 @@ bfork_front(struct s_block *b, size_t nbyte, int flag)
 	return b;
 }
 
-/* allocate a new heap, cascade it from HEAD. Return status: 0 - OK, 1-fail with errno */
+/* allocate a new heap and insert it at HEAD */
 int heapalloc(void) {
 	struct s_heap *newh;
 
 	newh = (struct s_heap *)mmap(NULL, HEAPSIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, 1, 0);
-	if (newh == (void*) -1)  
+	if (newh == (void*) -1)
 		return -1;
 
 	newh->fsize	= HEAPSIZE - HEAP_HEADER_SIZE;
-	newh->next		= HEAD;
 	newh->blocks	= 1;
 	newh->fblocks	= 1;
-	HEAD			= newh;
+	if (HEAD == NULL) {
+		newh->next = newh;
+		newh->prev = newh;
+	} else {
+		newh->next = HEAD;
+		newh->prev = HEAD->prev;
+		HEAD->prev->next = newh;
+		HEAD->prev = newh;
+	}
+	HEAD = newh;
 	heapcount++;
 
 
@@ -162,33 +174,14 @@ int heapalloc(void) {
 	return 0;
 }
 
-struct s_heap*
-heapfree(struct s_heap *h, struct s_heap *rmh) {
-	LOG("tried to HEAPFREE\n");
-	if (h == NULL)
-		return NULL;
-
-	if (h == rmh) {
-		struct s_heap *next = rmh->next;
-		if (munmap(rmh, HEAPSIZE) == -1) {
-			warn("munmap");
-			return h;
-		}
-		heapcount--;
-		return next;
-	} 
-
-	h->next = heapfree(h->next, rmh);
-	return h;
-}
 
 /* 
-merges given block and the next block
-merge only free blocks
+	merges given block with following block
+	works with only free blocks
 */
-
 struct s_block *
 bmerge( struct s_block *b ) {
+	assert( b->freed && b->next->freed );
 	LOG("merging blocks:\n \t%zu\t%zu \n \t|\t/ \n \t%zu \n", b->size, b->next->size, b->size + b->next->size);
 
 	struct s_block *rm = b->next;
@@ -217,48 +210,72 @@ void *aalloc(size_t nbyte) {
 	if (nbyte > max_size)
 		return NULL;
 
-	struct s_heap *h;
-	for ( h=HEAD; h != NULL; h=h->next ) {
-
-		if (h->fsize >= nbyte) {
-
-			struct s_block* b;
-			enum {IDLE, STREAK} state = IDLE;
-			for ( b=HEAP_SHIFT(h); b != NULL; b=b->next ) {
-				if ( b->freed ) {
+	struct s_heap *start = HEAD;
+	if (start != NULL) {
+		struct s_heap *h = start;
+		do {
+			struct s_block *b = HEAP_SHIFT(h);
+			while (b != NULL) {
+				if (b->freed) {
+					while (b->next != NULL && b->next->freed)
+						bmerge(b);
 
 					if (b->size > nbyte + BLOCK_HEADER_SIZE) {
-						b = bfork_front(b, nbyte, RESERVE);
+						b = bfork(b, nbyte, RESERVE);
+						HEAD = h->next;
 						return BLOCK_SHIFT(b);
 					}
-
-					else if (b->size == nbyte) {
+					if (b->size >= nbyte) {
 						b->freed = 0;
-						h->fsize -= nbyte;
+						h->fsize -= b->size;
 						h->fblocks--;
+						HEAD = h->next;
 						return BLOCK_SHIFT(b);
 					}
-
-					else if (state == STREAK) 
-						b = bmerge(b->prev);
-
-					state = STREAK;
-
 				}
-				else state = IDLE;
+				b = b->next;
 			}
-
-		}
-
-
+			h = h->next;
+		} while (h != start);
 	}
-	
+
 	if (heapalloc() == -1) 
 		return NULL;
 
 	return aalloc(nbyte);
 }
 
+/*	free heap completely
+	RETURN VALUE: 0 = success, -1 = fail
+*/
+int heapfree( struct s_heap *rmh ) {
+	LOG("tried to HEAPFREE\n");
+	if ( rmh == NULL )
+		return -1;
+
+	struct s_heap *next = rmh->next;
+	struct s_heap *prev = rmh->prev;
+	int is_single_heap = next == rmh;
+	if ( munmap(rmh, HEAPSIZE) == -1 ) {
+		warn("munmap");
+		return -1;
+	}
+	heapcount--;
+
+	if (is_single_heap) {
+		HEAD = NULL;
+		return 0;
+	}
+
+	prev->next = next;
+	next->prev = prev;
+	if (rmh == HEAD)
+		HEAD = next;
+
+	return 0;
+}
+
+/* custom free() */
 void afree(void *p) {
 	if (p == NULL)
 		return;
@@ -277,5 +294,5 @@ void afree(void *p) {
 	LOG("afree(): freeblocks: %zu\tblocks: %zu\n", h->fblocks, h->blocks);
 
 	if (h->fblocks == h->blocks)
-		HEAD = heapfree(HEAD, h);
+		heapfree(h);
 }
