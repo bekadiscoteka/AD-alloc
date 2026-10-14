@@ -1,4 +1,6 @@
-#include <aalloc.h>
+#include <aalloc_internal.h>
+
+#include <stdio.h>
 
 static int failures;
 

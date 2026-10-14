@@ -1,6 +1,20 @@
 # AD-alloc 
 Alzheimer's memory allocator
 
+## Using the allocator
+
+Include `aalloc.h` from application code and compile/link `aalloc.c` with the
+program:
+
+```sh
+cc -std=gnu11 -Wall -Wextra -Werror -I. app.c aalloc.c -o app
+```
+
+The public header contains only the allocator function declarations.
+`aalloc_internal.h` is an implementation/testing header and should not be
+included by application code. The implementation currently uses Linux/GNU
+memory-mapping interfaces.
+
 ## Editor settings
 
 C and header files use tabs displayed as 8 columns, as specified in
